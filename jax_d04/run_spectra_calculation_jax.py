@@ -5,12 +5,6 @@ Author: ZhouChk
 JAX优化: GPU加速批量计算
 """
 
-import os
-# 在导入JAX之前设置GPU内存选项（关键！）
-# 启用动态显存分配，避免一开始预分配所有显存导致cublas初始化失败
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
-os.environ['XLA_FLAGS'] = '--xla_gpu_force_compilation_parallelism=1'
-
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -30,15 +24,6 @@ from IO import write_results_to_file, read_results_from_file
 # 启用64位精度
 jax.config.update("jax_enable_x64", True)
 
-# GPU内存优化：限制JAX使用GPU显存比例，避免cublas初始化失败
-# RTX 4060有8GB显存，JAX默认预分配大部分，导致其他操作失败
-# 设置为False启用动态内存分配（按需要申请而不是预分配）
-try:
-    jax.config.update('jax_default_prolog_preamble_flags', '')
-    jax.config.gpu_memory_fraction = 0.7  # 限制到70%，留出空间给cuBLAS等
-except:
-    pass  # 如果设置失败就跳过
-
 def set_device_config(device_type: str = "auto"):
     """
     设置 JAX 计算设备
@@ -54,28 +39,27 @@ def set_device_config(device_type: str = "auto"):
     elif device_type == "gpu":
         # 检查 GPU 是否可用（需要在设置平台之前检查）
         try:
-            # JAX 0.8.1: 使用字符串匹配检测CUDA设备
-            gpu_devices = [d for d in jax.devices() if 'cuda' in str(d).lower()]
+            # 先尝试获取 GPU 设备
+            gpu_devices = [d for d in jax.devices() if d.platform == 'gpu']
             if gpu_devices:
                 jax.config.update('jax_platform_name', 'gpu')
-                print(f"🚀 强制使用 GPU 进行计算 - {gpu_devices}")
+                print(f"🚀 强制使用 GPU 进行计算")
             else:
                 print("⚠️ GPU 不可用，自动回退到 CPU")
                 jax.config.update('jax_platform_name', 'cpu')
-        except Exception as e:
-            print(f"⚠️ GPU 检测失败: {e}，自动回退到 CPU")
+        except:
+            print("⚠️ GPU 检测失败，自动回退到 CPU")
             jax.config.update('jax_platform_name', 'cpu')
     else:  # auto
         # 让 JAX 自动选择最佳设备
         try:
-            # JAX 0.8.1: 使用字符串匹配检测CUDA设备
-            gpu_devices = [d for d in jax.devices() if 'cuda' in str(d).lower()]
+            gpu_devices = [d for d in jax.devices() if d.platform == 'gpu']
             if gpu_devices:
-                print(f"🚀 自动选择: 使用 GPU 进行计算 - {gpu_devices}")
+                print(f"🚀 自动选择: 使用 GPU 进行计算")
             else:
                 print(f"🔧 自动选择: 使用 CPU 进行计算")
-        except Exception as e:
-            print(f"🔧 自动选择: 使用 CPU 进行计算 (错误: {e})")
+        except:
+            print(f"🔧 自动选择: 使用 CPU 进行计算")
     
     # 显示当前设备信息
     print(f"当前默认后端: {jax.default_backend()}")
@@ -222,13 +206,9 @@ def run_spectra_calculation_jax(L1: int,
         
         spectral_data_list = []
         
-        total_spec_time = 0
         for i, (channel, name) in enumerate(zip(channels, channel_names)):
             if verbose:
                 print(f"  计算 {name} (JAX GPU加速)...")
-            
-            # 添加计时
-            spec_start = time.time()
             
             # calculate_spectral_jax_vectorized返回 (kpath_len, omega_len)
             spec = calculate_spectral_jax_vectorized(
@@ -236,15 +216,8 @@ def run_spectra_calculation_jax(L1: int,
                 A1, A2, A3, B1, B2, B3, lambda_param, h,
                 k1, k2, Q1, Q2,
                 J1plus, J2plus, J3plus,
-                batch_size=50,  # 优化: 均衡计算速度和显存使用
-                beta=beta
+                beta
             )
-            
-            spec_time = time.time() - spec_start
-            total_spec_time += spec_time
-            
-            if verbose:
-                print(f"    {name} 耗时: {spec_time:.2f}秒")
             
             spectral_data_list.append(spec.T)
         
@@ -288,9 +261,7 @@ def run_spectra_calculation_jax(L1: int,
             
             if verbose:
                 print(f"  {name} 光谱数据已保存到 {spectral_file}")
-        
-        if verbose:
-            print(f"  光谱计算总耗时: {total_spec_time:.2f}秒")
+                print("  光谱函数计算完成并保存")
             
     except Exception as e:
         print(f"  光谱函数计算失败: {e}")
