@@ -148,6 +148,7 @@ def calculate_spectral_single_omega(omega: float, kpath: jnp.ndarray, eta: float
         return jnp.sum(total_contributions)
     
     # ====== JIT 外的 Python 循环：处理通道和k点 ======
+    # 优化：使用 jax.vmap 替代 Python 列表推导式，避免频繁的GPU同步
     for mu in range(3):
         for nu in range(3):
             # 在 Python 层面检查通道是否为零
@@ -155,11 +156,10 @@ def calculate_spectral_single_omega(omega: float, kpath: jnp.ndarray, eta: float
                 continue
             
             print(f"Calculating channel ({mu}, {nu}) contribution...")
-            # 对每个k点计算该通道的贡献
-            channel_spectrum = jnp.array([
-                compute_channel_kpoint(float(kpath[i, 0]), float(kpath[i, 1]), mu, nu)
-                for i in range(kpath_len)
-            ], dtype=jnp.complex128)
+            # 优化：使用 vmap 替代列表推导式
+            def compute_for_k(k):
+                return compute_channel_kpoint(k[0], k[1], mu, nu)
+            channel_spectrum = jax.vmap(compute_for_k)(kpath)
             
             spectrum = spectrum + channel[mu, nu] * channel_spectrum
     

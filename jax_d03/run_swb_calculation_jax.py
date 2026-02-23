@@ -29,27 +29,28 @@ def set_device_config(device_type: str = "auto"):
     elif device_type == "gpu":
         # 检查 GPU 是否可用（需要在设置平台之前检查）
         try:
-            # 先尝试获取 GPU 设备
-            gpu_devices = [d for d in jax.devices() if d.platform == 'gpu']
+            # JAX 0.8.1: 使用字符串匹配检测CUDA设备
+            gpu_devices = [d for d in jax.devices() if 'cuda' in str(d).lower()]
             if gpu_devices:
                 jax.config.update('jax_platform_name', 'gpu')
-                print(f"🚀 强制使用 GPU 进行计算")
+                print(f"🚀 强制使用 GPU 进行计算 - {gpu_devices}")
             else:
                 print("⚠️ GPU 不可用，自动回退到 CPU")
                 jax.config.update('jax_platform_name', 'cpu')
-        except:
-            print("⚠️ GPU 检测失败，自动回退到 CPU")
+        except Exception as e:
+            print(f"⚠️ GPU 检测失败: {e}，自动回退到 CPU")
             jax.config.update('jax_platform_name', 'cpu')
     else:  # auto
         # 让 JAX 自动选择最佳设备
         try:
-            gpu_devices = [d for d in jax.devices() if d.platform == 'gpu']
+            # JAX 0.8.1: 使用字符串匹配检测CUDA设备
+            gpu_devices = [d for d in jax.devices() if 'cuda' in str(d).lower()]
             if gpu_devices:
-                print(f"🚀 自动选择: 使用 GPU 进行计算")
+                print(f"🚀 自动选择: 使用 GPU 进行计算 - {gpu_devices}")
             else:
                 print(f"🔧 自动选择: 使用 CPU 进行计算")
-        except:
-            print(f"🔧 自动选择: 使用 CPU 进行计算")
+        except Exception as e:
+            print(f"🔧 自动选择: 使用 CPU 进行计算 (错误: {e})")
     
     # 显示当前设备信息
     print(f"当前默认后端: {jax.default_backend()}")
