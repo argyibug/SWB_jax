@@ -1,0 +1,8 @@
+#lattice vector
+1 0
+1/2 sqrt(3)/2
+#spin in cell
+3
+0 0
+1 0
+0 1
