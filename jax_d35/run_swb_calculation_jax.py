@@ -57,13 +57,13 @@ def set_device_config(device_type: str = "auto"):
     print()
 
 # 导入各个模块 - 使用JAX版本
-from gamma_functions import set_global_params
+from gamma_functions_jax import set_global_params
 from saddle_point_optimization_jax import optimize_saddle_point
 from bogoliubov_transform_jax import Bogoliubov_transform_2_jax
 from spectral_calculation_jax import calculate_spectral_jax_vectorized
 from spectral_calculation import get_triangular_lattice_path, convert_to_cartesian_coordinates
 from visualization import plot_dispersion, plot_spectral_intensity, plot_multiple_spectral_channels
-from IO import write_results_to_file, read_results_from_file
+from IO import write_results_to_file, read_results_from_file, create_bond_table_file, convert_bond_table_to_jax_array
 
 def run_complete_calculation(L1: int = 10, verbose: bool = True, device: str = "auto"):
     """
@@ -100,10 +100,6 @@ def run_complete_calculation(L1: int = 10, verbose: bool = True, device: str = "
     J2plus = (J2z + J2xy) / 2
     J3plus = (J3z + J3xy) / 2
     
-    # 磁序参数
-    Q1 = 2*np.pi/3
-    Q2 = 4*np.pi/3
-    
     # 晶格参数
     L2 = L1
     k1_1d = 2*np.pi/L1 * np.arange(L1)
@@ -112,10 +108,14 @@ def run_complete_calculation(L1: int = 10, verbose: bool = True, device: str = "
     k1 = k1_2d.flatten()
     k2 = k2_2d.flatten()
     Nsites = len(k1)
-    h = 1.0 / Nsites
+    h = 1 / Nsites
     
+    # 读取晶格信息
+    [bond_tab, n_spin, n_bond] = create_bond_table_file(unit_vector_filepath='unit_vector.in', cellspin_filepath='cellspin.in')
+    bond_tab = convert_bond_table_to_jax_array(bond_tab)
+
     # 设置全局参数
-    set_global_params(J1plus=J1plus, J2plus=J2plus, J3plus=J3plus, Q1=Q1, Q2=Q2)
+    set_global_params(J1plus=J1plus, J2plus=J2plus, J3plus=J3plus, bond_tab=bond_tab, bond_n=n_bond, spin_n=n_spin)
     
     if verbose:
         print(f"  晶格大小: {L1}x{L2}, 总格点数: {Nsites}")
@@ -131,8 +131,9 @@ def run_complete_calculation(L1: int = 10, verbose: bool = True, device: str = "
     start_time = time.time()
     try:
         result = optimize_saddle_point(
-            k1, k2, h, Q1, Q2, x0, 
-            S=S, J1plus=J1plus, J2plus=J2plus, J3plus=J3plus
+            k1, k2, h, x0,
+            S=S, J1plus=J1plus, J2plus=J2plus, J3plus=J3plus,
+            bond_tab=bond_tab, bond_n=n_bond, spin_n=n_spin,
         )
         A1, A2, A3, B1, B2, B3, lambda_param = result
         optimization_time = time.time() - start_time
@@ -149,7 +150,7 @@ def run_complete_calculation(L1: int = 10, verbose: bool = True, device: str = "
         
         A1 = A2 = A3 = 0.49126303j
         B1 = 0.22640955
-        B2 = -B1
+        B2 = B1
         B3 = B1
         lambda_param = 0.94176189
     
@@ -165,7 +166,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='SWB系统计算')
-    parser.add_argument('--L1', type=int, default=10, help='晶格大小 (默认: 10)')
+    parser.add_argument('--L1', type=int, default=5, help='晶格大小 (默认: 5)')
     parser.add_argument('--quiet', action='store_true', help='安静模式')
     parser.add_argument('--load', type=str, help='从文件加载结果 (例如: results/swb.dat)')
     parser.add_argument('--device', type=str, default='auto', 

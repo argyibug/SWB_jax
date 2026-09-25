@@ -108,7 +108,7 @@ def run_complete_calculation(L1: int = 10, verbose: bool = True, device: str = "
     k1 = k1_2d.flatten()
     k2 = k2_2d.flatten()
     Nsites = len(k1)
-    h = 1.0 / Nsites
+    h = 0 / Nsites
     
     # 读取晶格信息
     [bond_tab, n_spin, n_bond] = create_bond_table_file(unit_vector_filepath='unit_vector.in', cellspin_filepath='cellspin.in')
@@ -150,7 +150,7 @@ def run_complete_calculation(L1: int = 10, verbose: bool = True, device: str = "
         
         A1 = A2 = A3 = 0.49126303j
         B1 = 0.22640955
-        B2 = -B1
+        B2 = B1
         B3 = B1
         lambda_param = 0.94176189
     

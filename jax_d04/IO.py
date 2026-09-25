@@ -195,6 +195,7 @@ def gen_bond_table(spin_positions: np.ndarray, unit_vectors: np.ndarray) -> Tupl
     print("unit_vectors:\n", unit_vectors)
     extand_spin_table = []
     n_spin = len(spin_positions)
+    # 以若干晶格平移复制原胞自旋，构建用于近邻搜索的扩展超胞。
     tran_table = [[0,0], [0,1], [1,0], [1,-1], [0,-1], [-1,0], [-1,1]]
     tran_table = np.array(tran_table) @ unit_vectors
     print(f"生成平移表，共 {len(tran_table)} 个平移向量:")
@@ -211,14 +212,24 @@ def gen_bond_table(spin_positions: np.ndarray, unit_vectors: np.ndarray) -> Tupl
     print(f"单位矢量矩阵:\n{unit_vectors}")
     if unit_vectors.ndim == 2 and unit_vectors.shape[0] == unit_vectors.shape[1]:
         inv_unit_vectors = np.linalg.inv(unit_vectors)
+
         print(f"单位矢量逆矩阵:\n{inv_unit_vectors}")
         print(f"验证单位矢量与逆矩阵的乘积:\n{unit_vectors @ inv_unit_vectors}")
+        
+        # test: 修改为单site元包
+        unit_vectors_single = np.array([[1, 0], [1/2, np.sqrt(3)/2]], dtype=float)
+        print(f"单元格单位矢量矩阵:\n{unit_vectors_single}")
+        inv_unit_vectors_single = np.linalg.inv(unit_vectors_single)
+        inv_unit_vectors = inv_unit_vectors_single
+        print(f"验证单元格位矢量与逆矩阵的乘积:\n{unit_vectors_single @ inv_unit_vectors_single}")
+
     else:
         print("单位矢量不是方阵，无法计算逆矩阵")
     print(f"自旋位置矩阵:\n{[1,0]@unit_vectors}")
 
     bond_table=[]
     n_bond=0
+    # 在原胞与扩展超胞之间按距离筛选最近邻键。
     for i in range(len(spin_positions)):
         for j in range(len(extand_spin_table)):
             if i == -j:
@@ -229,6 +240,7 @@ def gen_bond_table(spin_positions: np.ndarray, unit_vectors: np.ndarray) -> Tupl
                     print(f"找到键: 自旋 {i} 与扩展位置 {j} 距离 {dist:.2e}")
                     site_i = i % len(spin_positions)
                     site_j = j % len(spin_positions)
+                    # 依据子晶格对 (0-1, 1-2, 0-2) 标注三类键型。
                     if (site_i == 0 and site_j == 1) or (site_i == 1 and site_j == 0):
                         type = 0
                         rij= extand_spin_table[j] - spin_positions[i]
@@ -243,6 +255,7 @@ def gen_bond_table(spin_positions: np.ndarray, unit_vectors: np.ndarray) -> Tupl
                         bond_table.append((i, j, site_i, site_j, rij, rij@inv_unit_vectors, type))
                     n_bond += 1
                     print(f"  键向量: {rij}")
+    # bond_table 格式是[１原胞内自旋索引，２原胞内自旋索引，１原胞外自旋索引，２原胞外自旋索引，５实空间键向量，６晶格基矢坐标，７键型 ]
 
     print(f"总共找到 {n_bond} 个键")
 
@@ -329,29 +342,64 @@ def create_bond_table_file(unit_vector_filepath: str = 'unit_vector.in', cellspi
     print(cell_spins)
 
     [bond_table, n_spin, n_bond] = gen_bond_table(spin_positions=cell_spins, unit_vectors=unit_vectors)
+    
+    n_spin = 1
+    
     return bond_table, n_spin, n_bond
 
 def convert_bond_table_to_jax_array(bond_table) -> np.ndarray:
     """将 bond_table 压平成 JAX 可消费的纯数值矩阵。
 
-    输出列顺序为 [i, j, site_i, site_j, rij_x, rij_y, bond_type]，
-    其中 rij_x 和 rij_y 使用晶格基矢坐标。
+    默认输出列顺序为
+    [i, j, site_i, site_j, lattice_rij_x, lattice_rij_y, real_rij_x, real_rij_y, bond_type]。
+    即统一以第 9 列（索引 8）作为 bond_type。
     """
     if isinstance(bond_table, np.ndarray) and bond_table.dtype != object:
         numeric_bond_table = np.asarray(bond_table, dtype=np.float64)
         if numeric_bond_table.ndim != 2 or numeric_bond_table.shape[1] < 7:
             raise ValueError(f"bond_table 数值矩阵形状无效: {numeric_bond_table.shape}")
-        return numeric_bond_table[:, :7]
+
+        # 已是纯数值矩阵时，统一规范为 bond_type 在第 9 列。
+        if numeric_bond_table.shape[1] >= 9:
+            col6 = numeric_bond_table[:, 6]
+            col8 = numeric_bond_table[:, 8]
+
+            # 新格式（目标格式）：[... , real_x, real_y, bond_type]
+            is_col8_bond_type = np.all(np.isclose(col8, np.round(col8))) and np.all((col8 >= -1) & (col8 <= 2))
+            # 旧格式（需要纠正）：[... , bond_type, real_x, real_y]
+            is_col6_bond_type = np.all(np.isclose(col6, np.round(col6))) and np.all((col6 >= -1) & (col6 <= 2))
+
+            if is_col8_bond_type:
+                return numeric_bond_table[:, :9]
+            if is_col6_bond_type:
+                return numeric_bond_table[:, [0, 1, 2, 3, 4, 5, 7, 8, 6]]
+
+            # 9+ 列但无法识别键型列时，保留前 9 列。
+            return numeric_bond_table[:, :9]
+
+        # 老的 7 列格式：[i,j,site_i,site_j,lattice_x,lattice_y,bond_type]
+        # 统一扩展到 9 列，新加 real_rij_x/real_rij_y 用 0 占位。
+        if numeric_bond_table.shape[1] == 7:
+            zeros = np.zeros((numeric_bond_table.shape[0], 2), dtype=np.float64)
+            return np.column_stack([numeric_bond_table[:, :6], zeros, numeric_bond_table[:, 6]])
+
+        return numeric_bond_table
 
     numeric_rows = []
     for bond_idx, bond in enumerate(bond_table):
         if len(bond) not in (6, 7):
             raise ValueError(f"第 {bond_idx} 个 bond 长度无效: {len(bond)}")
 
+        # bond[5] 为 rij 的晶格基矢坐标（旧格式里可能是数组/列表）。
         lattice_rij = np.asarray(bond[5], dtype=np.float64).reshape(-1)
         if lattice_rij.size != 2:
             raise ValueError(f"第 {bond_idx} 个 bond 的晶格坐标维度无效: {lattice_rij}")
+        
+        real_rij  = np.asarray(bond[4], dtype=np.float64).reshape(-1)
+        if real_rij.size != 2:
+            raise ValueError(f"第 {bond_idx} 个 bond 的实空间坐标维度无效: {real_rij}")
 
+        # 兼容历史 6 元组格式：缺省键型时按索引循环补齐。
         bond_type = float(bond[6]) if len(bond) == 7 else float(bond_idx % 3)
         numeric_rows.append([
             float(bond[0]),
@@ -360,6 +408,8 @@ def convert_bond_table_to_jax_array(bond_table) -> np.ndarray:
             float(bond[3]),
             float(lattice_rij[0]),
             float(lattice_rij[1]),
+            float(real_rij[0]),
+            float(real_rij[1]),
             bond_type,
         ])
 
@@ -399,6 +449,66 @@ def write_results_to_file(filename: str, A1: complex, A2: complex, A3: complex,
         f.write(f"lambda = {lambda_param:.15e}\n")
     print(f"结果已保存到: {filename}")
 
+def plot_point_bond_check(filepath_unit_vector: str = 'unit_vector.in', filepath_bond: str = 'bond.log', filepath_spin: str = 'cellspin.in'):
+    """
+    绘制自旋位置和键的检查图
+    
+    Parameters:
+    -----------
+    filepath_unit_vector : str
+        单位矢量文件路径（默认 'unit_vector.in'）
+    filepath_bond : str
+        键表文件路径（默认 'bond.log'）
+    filepath_spin : str
+        自旋晶胞文件路径（默认 'cellspin.in'）
+    """
+    # 以若干晶格平移复制原胞自旋，构建用于可视化和索引匹配的扩展超胞。
+    tran_table = np.array([[0, 0], [0, 1], [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1]], dtype=float)
+
+    dim, unit_vectors = read_unit_vectors(filepath=filepath_unit_vector)
+    if dim != 2:
+        raise ValueError(f"plot_point_bond_check 当前仅支持 2D，读取到 dim={dim}")
+
+    bond_table, n_spin, _ = read_bond_table(filepath=filepath_bond)
+    _, _, spin_positions = read_spin_in_cell(dim=dim, filepath=filepath_spin)
+
+    tran_vectors = tran_table @ unit_vectors
+    extand_spin_table = []
+    for tran in tran_vectors:
+        for spin_pos in spin_positions:
+            extand_spin_table.append(spin_pos + tran)
+    extand_spin_table = np.asarray(extand_spin_table, dtype=float)
+
+    plt.figure(figsize=(8, 8))
+    plt.scatter(extand_spin_table[:, 0], extand_spin_table[:, 1], c='lightgray', s=25, label='Translated Sites')
+    plt.scatter(spin_positions[:, 0], spin_positions[:, 1], c='blue', s=35, label='Unit Cell Sites')
+
+    type_colors = {0: 'red', 1: 'green', 2: 'orange'}
+    type_labels_used = set()
+    for bond in bond_table:
+        i = int(bond[0])
+        j = int(bond[1])
+        if i < 0 or i >= n_spin or j < 0 or j >= len(extand_spin_table):
+            continue
+
+        bond_type = int(bond[6]) if len(bond) >= 7 else -1
+        color = type_colors.get(bond_type, 'black')
+        label = None
+        if bond_type not in type_labels_used:
+            label = f'Bond type {bond_type}' if bond_type in type_colors else 'Bond'
+            type_labels_used.add(bond_type)
+
+        pos_i = spin_positions[i]
+        pos_j = extand_spin_table[j]
+        plt.plot([pos_i[0], pos_j[0]], [pos_i[1], pos_j[1]], c=color, alpha=0.45, linewidth=1.2, label=label)
+
+    plt.title('Spin Positions and Bonds')
+    plt.xlabel('x')
+    plt.ylabel('y')
+    plt.legend()
+    plt.axis('equal')
+    plt.grid()
+    plt.show()
 
 def read_results_from_file(filename: str) -> Tuple[complex, complex, complex, complex, complex, complex, float]:
     """

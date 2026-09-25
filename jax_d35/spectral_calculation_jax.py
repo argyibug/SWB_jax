@@ -8,6 +8,7 @@ JAX优化: 完全向量化，消除Python循环，GPU并行计算
 import jax
 import jax.numpy as jnp
 import numpy as np
+import IO
 from typing import Tuple
 from functools import partial
 from bogoliubov_transform_jax import Bogoliubov_transform_jax_batch
@@ -18,8 +19,8 @@ def calculate_spectral_single_omega(omega: float, kpath: jnp.ndarray, eta: float
                                     B1: float, B2: float, B3: float,
                                     lambda_param: float, h: float,
                                     k1_all: jnp.ndarray, k2_all: jnp.ndarray,
-                                    Q1: float, Q2: float,
                                     J1plus: float, J2plus: float, J3plus: float,
+                                    bond_tab_jax: jnp.ndarray, n_spin: int, n_bond: int,
                                     U_k: jnp.ndarray, eng_k: jnp.ndarray,
                                     beta: float = 100) -> jnp.ndarray:
     """    
@@ -60,32 +61,38 @@ def calculate_spectral_single_omega(omega: float, kpath: jnp.ndarray, eta: float
                           [0, 0, -1, 0],
                           [0, 0, 0, 1]], dtype=jnp.complex128)
     
-    ux = 0.5 * jnp.array([[0, 0, 1, 0],
-                          [0, 0, 0, 1],
+    ux = 0.5 * jnp.array([[0, 1, 0, 0],
                           [1, 0, 0, 0],
-                          [0, 1, 0, 0]], dtype=jnp.complex128)
+                          [0, 0, 0, 1],
+                          [0, 0, 1, 0]], dtype=jnp.complex128)
     
-    uy = 0.5 * jnp.array([[0, 0, 1j, 0],
-                          [0, 0, 0, 1j],
-                          [-1j, 0, 0, 0],
-                          [0, -1j, 0, 0]], dtype=jnp.complex128)
+    uy = 0.5 * jnp.array([[0, -1j, 0, 0],
+                          [1j, 0, 0, 0],
+                          [0, 0, 0, -1j],
+                          [0, 0, 1j, 0]], dtype=jnp.complex128)
     
     u = jnp.stack([ux, uy, uz], axis=0)
 
-    
+    Q1 = 2*np.pi/3
+    Q2 = 4*np.pi/3
     order_vec = jnp.array([[[Q1, Q2],[0, 0],[0, 0]],
                           [[0, 0],[Q1, Q2],[0, 0]],
                           [[0, 0],[0, 0],[0, 0]]], dtype=jnp.complex128)
+
+    spin_n = n_spin
+    spin_n = 1
+    mat_dim = 4 * spin_n
+    g = jnp.eye(mat_dim, dtype=jnp.float64)
     
-    # 度规矩阵
-    g = jnp.eye(4)
-    g = g.at[1, 1].set(-1)
-    g = g.at[3, 3].set(-1)
-        
+    def make_g(n, carry):
+        # jax.debug.print("设置度规矩阵 g 的元素 g[{n},{n}] = -1", n=n, ordered=True)
+        return carry.at[n, n].set(-1)
+    g = jax.lax.fori_loop(2*spin_n, 4*spin_n, make_g, g)
+    
     Nsites = k1_all.shape[0]
     kpath_len = kpath.shape[0]
     spectrum = jnp.zeros(kpath_len, dtype=jnp.complex128)
-    
+
     # JIT 编译的核心计算函数（单个通道和单个k点）
     @partial(jax.jit, static_argnums=(2, 3))
     def compute_channel_kpoint(kx, ky, mu_idx, nu_idx):
@@ -97,9 +104,12 @@ def calculate_spectral_single_omega(omega: float, kpath: jnp.ndarray, eta: float
 
         # 计算k+q点的Bogoliubov变换
         U_kq, eng_kq = Bogoliubov_transform_jax_batch(
-            omega_modified, kq1_all, kq2_all, Q1, Q2,
+            omega_modified, kq1_all, kq2_all,
             A1, A2, A3, B1, B2, B3, lambda_param, h,
-            J1plus, J2plus, J3plus
+            J1plus, J2plus, J3plus,
+            bond_tab=bond_tab_jax,
+            spin_n=n_spin,
+            bond_n=n_bond,
         )
         
         se_kq = eng_kq @ g  # (Nsites, 4)
@@ -199,14 +209,23 @@ def calculate_spectral_jax_vectorized(kpath: jnp.ndarray, omega_array: jnp.ndarr
     jnp.ndarray
         光谱函数 (kpath_len, omega_len)
     """
+    [bond_tab, n_spin, n_bond] = IO.read_bond_table(filepath='bond.log')
+    bond_tab_numeric = IO.convert_bond_table_to_jax_array(bond_tab)
+    bond_tab_jax = jnp.asarray(bond_tab_numeric)
+
+    n_spin = 1
+
     omega_modified = 0  # 修正频率初始化
     kpath_len = kpath.shape[0]
     omega_len = omega_array.shape[0]
     
     U_k, eng_k = Bogoliubov_transform_jax_batch(
-        omega_modified, k1_all, k2_all, Q1, Q2,
+        omega_modified, k1_all, k2_all,
         A1, A2, A3, B1, B2, B3, lambda_param, h,
-        J1plus, J2plus, J3plus
+        J1plus, J2plus, J3plus,
+        bond_tab=bond_tab_jax,
+        spin_n=n_spin,
+        bond_n=n_bond,
     )
 
     # 分批处理频率，避免内存溢出
@@ -220,8 +239,10 @@ def calculate_spectral_jax_vectorized(kpath: jnp.ndarray, omega_array: jnp.ndarr
             def compute_single_omega(w):
                 return calculate_spectral_single_omega(
                     w, kpath, eta, channel, A1, A2, A3, B1, B2, B3,
-                    lambda_param, h, k1_all, k2_all, Q1, Q2,
-                    J1plus, J2plus, J3plus, U_k, eng_k,
+                    lambda_param, h, k1_all, k2_all,
+                    J1plus, J2plus, J3plus,
+                    bond_tab_jax, n_spin, n_bond,
+                    U_k, eng_k,
                     beta
                 )
             

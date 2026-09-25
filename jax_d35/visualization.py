@@ -514,7 +514,7 @@ def create_publication_ready_plots():
     plt.rcParams.update({
         'font.size': 12,
         'font.family': 'serif',
-        'font.serif': ['Times New Roman'],
+        'font.serif': ['DejaVu Serif', 'Liberation Serif', 'Nimbus Roman', 'Times New Roman'],
         'mathtext.fontset': 'stix',
         'text.usetex': False,  # 如果有LaTeX可以设为True
         'figure.figsize': [8, 6],

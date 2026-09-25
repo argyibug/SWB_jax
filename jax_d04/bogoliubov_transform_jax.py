@@ -34,15 +34,20 @@ def bogoliubov_single_k(H_k: jnp.ndarray, spin_n: int) -> Tuple[jnp.ndarray, jnp
         能谱 (4*spin_n,)
     """
     # 度规矩阵
+    spin_n = 1
     mat_dim = 4 * spin_n
 
     g = jnp.eye(mat_dim, dtype=jnp.float64)
 
     def make_g(n, carry):
+        # jax.debug.print("设置度规矩阵 g 的元素 g[{n},{n}] = -1", n=n, ordered=True)
         return carry.at[n, n].set(-1)
     g = jax.lax.fori_loop(2*spin_n, 4*spin_n, make_g, g)
     
     # Cholesky分解 (upper triangular, 与NumPy版本一致)
+    entest=jnp.linalg.eigvals(H_k)
+    # jax.debug.print("输入矩阵H_k的特征值: {entest}", entest=entest)
+    
     r_lower = jnp.linalg.cholesky(H_k)  # JAX默认返回下三角
     r = r_lower.T.conj()  # 转置得到上三角
     
@@ -57,11 +62,13 @@ def bogoliubov_single_k(H_k: jnp.ndarray, spin_n: int) -> Tuple[jnp.ndarray, jnp
     
     un = ut[:, sort_idx]
 
-    # 计算重排后每个特征向量对应的特征值
     def compute_eigenval(v):
         return v.conj().T @ ht @ v
-    
+
+    # jax.debug.print("排序后的特征值: {sort_enk}", sort_enk=sort_enk,ordered=True)
     ekk_diag = jax.vmap(compute_eigenval, in_axes=1)(un)
+    # jax.debug.print("逐列验证特征值 v^H H v: {ekk_diag}", ekk_diag=ekk_diag, ordered=True)
+    # jax.debug.print("验证误差 (v^H H v - sort_enk): {delta}", delta=(ekk_diag.real - sort_enk), ordered=True)
 
     # 计算最终的Bogoliubov矩阵
     ekk = jnp.diag(ekk_diag)
@@ -136,6 +143,7 @@ def Bogoliubov_transform_2_jax(omega: float, k1: jnp.ndarray, k2: jnp.ndarray,
     k2 = jnp.atleast_1d(k2)
     
     # 执行批量计算
+    spin_n = 1
     Ubov, ek = Bogoliubov_transform_jax_batch(
         omega, k1, k2, A1, A2, A3, B1, B2, B3, 
         lambda_param, h, J1plus, J2plus, J3plus, bond_tab, spin_n, bond_n
@@ -155,7 +163,10 @@ def Bogoliubov_constraint_jax_batch(omega: float, k1: jnp.ndarray, k2: jnp.ndarr
     # 构建哈密顿量（批量）
     H = Ham_jax(omega, k1, k2, A1, A2, A3, B1, B2, B3, 
                 lambda_param, h, J1plus, J2plus, J3plus, bond_tab, spin_n, bond_n)
-    
+    # jax.debug.print("lambda_param: {}", lambda_param, ordered=True)
+    # jax.debug.print("H shape: {}", H.shape, ordered=True)
+    # jax.debug.print("H[0]:\n{}", H[0], ordered=True)
+
     # 使用vmap进行向量化处理所有k点
     min_eng = jax.vmap(get_min_energy_jax)(H)
     
@@ -195,6 +206,7 @@ def get_min_energy_jax(H_k: jnp.ndarray) -> jnp.ndarray:
     # 计算特征值和特征向量 (使用eig以匹配NumPy版本)
     enk_vals, _ = jnp.linalg.eig(H_k)
     min_energies = jnp.min(enk_vals.real)
+    # jax.debug.print("min_energies: {}", min_energies, ordered=True)
 
     return min_energies
 
@@ -220,91 +232,60 @@ def saddle_point_sum_jax(Ubov: jnp.ndarray, k1: jnp.ndarray, k2: jnp.ndarray,
     tuple
         (lambda, AA, BB, Usum) - 各种求和结果
     """
+    spin_n = 1
+
     mat_dim = 4 * spin_n # 哈密顿量矩阵的维度
     nk = Ubov.shape[0]
     bond_n_eff = min(bond_n, bond_tab.shape[0])
-    has_bond_type = bond_tab.shape[1] > 6
     Jplus = jnp.array([J1plus, J2plus, J3plus], dtype=jnp.float64)
     #Jplus = jnp.array([J1plus, 0, 0], dtype=jnp.float64)
 
-    idx = jnp.arange(spin_n, dtype=jnp.int32)
-    idx_upd = idx
-    idx_dwd = idx + spin_n
-    idx_dwo = (spin_n - 1 - idx) + 2 * spin_n
-    idx_upo = (spin_n - 1 - idx) + 3 * spin_n
+    from Hamiltonian_jax import compute_diag_term, bond_body
 
-    lam_template = jnp.zeros((mat_dim, mat_dim), dtype=jnp.complex128)
-    lam_template = lam_template.at[idx_upd, mat_dim - 1 - idx_upo].set(1.0)
-    lam_template = lam_template.at[idx_dwd, mat_dim - 1 - idx_dwo].set(1.0)
-    lam_template = lam_template.at[idx_upo, mat_dim - 1 - idx_upd].set(1.0)
-    lam_template = lam_template.at[idx_dwo, mat_dim - 1 - idx_dwd].set(1.0)
+    B_I = jnp.array([1, 0, 0], dtype=jnp.float64)
+    A_I = jnp.array([1, 0, 0], dtype=jnp.float64)
+    I_0 = jnp.array([0, 0, 0], dtype=jnp.float64)
 
-    def compute_single_k_contribution(ut, k1_i, k2_i):
-        """计算单个k点的贡献"""
-        cc_init = jnp.zeros((mat_dim, mat_dim), dtype=jnp.complex128)
-        ss_init = jnp.zeros((mat_dim, mat_dim), dtype=jnp.complex128)
+    # 1. 预计算 lam_template (k无关，只算一次)
+    lam_template = jnp.zeros((1, mat_dim, mat_dim), dtype=jnp.complex128)
+    lam_template = jax.lax.fori_loop(0, spin_n,
+        lambda i, lam_cur: compute_diag_term(i, lam_cur, 1, 1, 0, spin_n, mat_dim),
+        lam_template)
+    lam_template = lam_template[0]  # (mat_dim, mat_dim)
 
-        def compute_single_bond_contribution(b, carry):
-            cc_cur, ss_cur = carry
+    # 2. 预计算所有 k 点的 cc_cur 和 ss_cur
+    def compute_k_hamiltonians(k1_i, k2_i):
+        cc_init = jnp.zeros((1, mat_dim, mat_dim), dtype=jnp.complex128)
+        ss_init = jnp.zeros((1, mat_dim, mat_dim), dtype=jnp.complex128)
+        cc_cur = jax.lax.fori_loop(0, bond_n_eff,
+            lambda b, c: bond_body(b, c, B_I, I_0, bond_tab, spin_n, mat_dim, k1_i, k2_i), cc_init)
+        ss_cur = jax.lax.fori_loop(0, bond_n_eff,
+            lambda b, s: bond_body(b, s, I_0, A_I, bond_tab, spin_n, mat_dim, k1_i, k2_i), ss_init)
+        return cc_cur[0], ss_cur[0]  # (mat_dim, mat_dim) each
 
-            s1_idx = jnp.asarray(bond_tab[b, 2], dtype=jnp.int32)
-            s2_idx = jnp.asarray(bond_tab[b, 3], dtype=jnp.int32)
+    cc_cur_all, ss_cur_all = jax.vmap(compute_k_hamiltonians)(k1, k2)
+    # cc_cur_all: (nk, mat_dim, mat_dim)
+    # ss_cur_all: (nk, mat_dim, mat_dim)
 
-            s1_upd_idx = s1_idx
-            s1_dwd_idx = s1_idx + spin_n
-            s1_dwo_idx = (spin_n - 1 - s1_idx) + 2 * spin_n
-            s1_upo_idx = (spin_n - 1 - s1_idx) + 3 * spin_n
-
-            s2_upd_idx = s2_idx
-            s2_dwd_idx = s2_idx + spin_n
-            s2_dwo_idx = (spin_n - 1 - s2_idx) + 2 * spin_n
-            s2_upo_idx = (spin_n - 1 - s2_idx) + 3 * spin_n
-
-            rij_x = bond_tab[b, 4]
-            rij_y = bond_tab[b, 5]
-            kr = k1_i * rij_x + k2_i * rij_y
-
-            if has_bond_type:
-                bond_type = jnp.asarray(bond_tab[b, 6], dtype=jnp.int32)
-            else:
-                bond_type = jnp.mod(b, 3)
-
-            cos_term = 0.5 * Jplus[bond_type] * jnp.cos(kr)
-            sin_term = 0.5 * Jplus[bond_type] * jnp.sin(kr)
-
-            cc_cur = cc_cur.at[s1_upo_idx, mat_dim - 1 - s2_upd_idx].add(cos_term)
-            cc_cur = cc_cur.at[s1_dwo_idx, mat_dim - 1 - s2_dwd_idx].add(cos_term)
-            cc_cur = cc_cur.at[s1_upd_idx, mat_dim - 1 - s2_upo_idx].add(cos_term)
-            cc_cur = cc_cur.at[s1_dwd_idx, mat_dim - 1 - s2_dwo_idx].add(cos_term)
-
-            ss_cur = ss_cur.at[s1_upo_idx, mat_dim - 1 - s2_dwo_idx].add(sin_term)
-            ss_cur = ss_cur.at[s1_dwo_idx, mat_dim - 1 - s2_upo_idx].add(-sin_term)
-            ss_cur = ss_cur.at[s1_upd_idx, mat_dim - 1 - s2_dwd_idx].add(-sin_term)
-            ss_cur = ss_cur.at[s1_dwd_idx, mat_dim - 1 - s2_upd_idx].add(sin_term)
-
-            return cc_cur, ss_cur
-
-        cc_cur, ss_cur = jax.lax.fori_loop(0, bond_n_eff, compute_single_bond_contribution, (cc_init, ss_init))
-        # 计算 ut @ ut^† 
-        ut_uth = ut @ jnp.conj(ut).T
-        
-        # 计算三个组合矩阵
+    # 3. 每个 k 点只做矩阵乘法
+    def compute_single_k_contribution(ut, cc_cur_k, ss_cur_k):
+        ut_uth = ut @ jnp.conj(ut).T  # (mat_dim, mat_dim)
         combined_0 = ut_uth @ lam_template - lam_template
-        combined_1 = ut_uth @ cc_cur
-        combined_2 = ut_uth @ ss_cur
-        
-        # 返回shape (3, 4, 4)
-        return jnp.stack([combined_0, combined_1, combined_2], axis=0)
+        combined_1 = ut_uth @ cc_cur_k
+        combined_2 = ut_uth @ ss_cur_k
+        # jax.debug.print("lam_template: {}", lam_template, ordered=True)
+        # jax.debug.print("cc_cur_k: {}", cc_cur_k, ordered=True)
+        # jax.debug.print("ss_cur_k: {}", ss_cur_k, ordered=True)
+        return jnp.stack([combined_0, combined_1, combined_2], axis=0)  # (3, mat_dim, mat_dim)
 
-    # 向量化计算所有k点
-    all_contributions = jax.vmap(compute_single_k_contribution)(Ubov, k1, k2)
-    
-    # 对所有k点求和并归一化 (sum over k-points, result shape: (3, 4, 4))
+    all_contributions = jax.vmap(compute_single_k_contribution)(Ubov, cc_cur_all, ss_cur_all)
+    # all_contributions: (nk, 3, mat_dim, mat_dim)
+
+    # 对所有k点求和并归一化
     Usum = jnp.sum(all_contributions, axis=0) / nk
-    
-    # 计算各个量
-    lam = jnp.trace(Usum[0, :, :])*0.5
-    AA = jnp.trace(Usum[2, :, :])*0.5
-    BB = jnp.trace(Usum[1, :, :])*0.5
-    
+
+    lam = jnp.trace(Usum[0, :, :]) * 0.25
+    AA = jnp.trace(Usum[2, :, :]) * 0.125
+    BB = jnp.trace(Usum[1, :, :]) * 0.125
+
     return jnp.real(lam), AA, BB, Usum

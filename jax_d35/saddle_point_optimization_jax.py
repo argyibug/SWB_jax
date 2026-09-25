@@ -5,18 +5,20 @@ Author: ZhouChk
 """
 
 import numpy as np
+import jax
 import jax.numpy as jnp
 import nlopt
 from typing import Tuple, Optional, Callable, List
 import scipy.optimize as opt
-from datetime import datetime
 from bogoliubov_transform_jax import Bogoliubov_transform_2_jax, Bogoliubov_constraint_jax, saddle_point_sum_jax
-from gamma_functions import set_global_params
+from gamma_functions_jax import set_global_params
+from IO import convert_bond_table_to_jax_array
 
 class SaddlePointOptimizer:
     """鞍点优化器类"""
     
-    def __init__(self, S: float = 0.5, J1plus: float = 0.5, J2plus: float = 0.5, J3plus: float = 0.5):
+    def __init__(self, S: float = 0.5, J1plus: float = 0.5, J2plus: float = 0.5, J3plus: float = 0.5,
+                 bond_tab: np.ndarray = None, bond_n: int = 1, spin_n: int = 1):
         """
         初始化优化器
         
@@ -32,36 +34,34 @@ class SaddlePointOptimizer:
         self.k2 = None
         self.Nsites = None
         self.h = None
-        self.Q1 = None
-        self.Q2 = None
         self.J1plus = J1plus
         self.J2plus = J2plus
         self.J3plus = J3plus
+        self.bond_tab = bond_tab
+        self.bond_n = bond_n
+        self.spin_n = spin_n
         self.test = 1  # 默认使用改进版本
-        self.log_path = "opt.log"
-
-    def _init_opt_log(self):
-        """初始化优化日志文件。"""
-        with open(self.log_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Optimization log started at {datetime.now().isoformat()}\n")
-            f.write("# iter\tA1_imag\tB1\tlambda\tobj\n")
-
-    def _append_opt_log(self, A1: complex, B1: float, lambda_param: float, obj_value: float):
-        """追加记录当前 A/B/lambda 与目标函数值。"""
-        with open(self.log_path, 'a', encoding='utf-8') as f:
-            f.write(
-                f"{self.iteration_count}\t{np.imag(A1):.12e}\t{float(B1):.12e}\t"
-                f"{float(lambda_param):.12e}\t{float(obj_value):.12e}\n"
-            )
         
-    def set_lattice(self, k1: np.ndarray, k2: np.ndarray, h: float, Q1: float, Q2: float):
+    def set_lattice(self, k1: np.ndarray, k2: np.ndarray, h: float):
         """设置晶格参数"""
         self.k1 = k1
         self.k2 = k2
         self.Nsites = len(k1)
         self.h = h
-        self.Q1 = Q1
-        self.Q2 = Q2
+
+    def _init_opt_log(self, log_path: str = "opt.log"):
+        """初始化优化日志文件。"""
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("# iter A1_real A1_imag B1 lambda obj\n")
+
+    def _append_opt_log(self, A1: complex, B1: float, lambda_param: float, obj: float, log_path: str = "opt.log"):
+        """追加当前优化状态到日志文件。"""
+        iter_id = getattr(self, "iteration_count", 0)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(
+                f"{iter_id} {np.real(A1):.12e} {np.imag(A1):.12e} {float(B1):.12e} "
+                f"{float(lambda_param):.12e} {float(obj):.12e}\n"
+            )
         
     def saddle_point_eq_number(self, lambda_param: float, A1: complex, B1: complex) -> float:
         """
@@ -83,21 +83,26 @@ class SaddlePointOptimizer:
         """
         A2 = A1
         A3 = A1
-        B2 = -B1
+        B2 = B1
         B3 = B1
 
-        # res_eq=Bogoliubov_constraint_jax(0, self.k1, self.k2, self.Q1, self.Q2, A1, A2, A3, B1, B2, B3, lambda_param, self.h)
+        # res_eq=Bogoliubov_constraint_jax(0, self.k1, self.k2, A1, A2, A3, B1, B2, B3, lambda_param, self.h)
         # print("check eq number constraint:", res_eq, lambda_param)
         # print("A1:", A1, "B1:", B1, "lambda:", lambda_param)
         # print("--------------------------------------------------")
 
         Ubov = Bogoliubov_transform_2_jax(
-            0, self.k1, self.k2, self.Q1, self.Q2, A1, A2, A3, B1, B2, B3, lambda_param, self.h,
-            self.J1plus, self.J2plus, self.J3plus)[0]
+            0, self.k1, self.k2, A1, A2, A3, B1, B2, B3, lambda_param, self.h,
+            self.J1plus, self.J2plus, self.J3plus, self.bond_tab, self.spin_n, self.bond_n)[0]
         # print("--------------------------------------------------")
             
-        lam = saddle_point_sum_jax(Ubov, self.k1, self.k2, self.Q1, self.Q2)[0]
+        lam = saddle_point_sum_jax(
+            Ubov, self.k1, self.k2,
+            self.J1plus, self.J2plus, self.J3plus,
+            self.bond_tab, self.spin_n, self.bond_n
+        )[0]
         z = (lam - 2.0 * self.S)**2
+        #jax.debug.print("lambda: {}, target: {}, obj: {}", lam, 2.0 * self.S, z)
             
         return z
     
@@ -121,58 +126,15 @@ class SaddlePointOptimizer:
         """
         A2 = A1
         A3 = A1
-        B2 = -B1
+        B2 = B1
         B3 = B1
         
-        con_eig = Bogoliubov_constraint_jax(0, self.k1, self.k2, self.Q1, self.Q2, A1, A2, A3, B1, B2, B3, 
-                                        lambda_param, self.h, self.J1plus, self.J2plus, self.J3plus)
-        
-        # 约束容差调节策略
-        # ========================================
-        # 约束形式: con_eig ≥ tolerance  =>  constraint = tolerance - con_eig ≤ 0
-        # 
-        # tolerance 的物理意义:
-        # - 确保 Bogoliubov 哈密顿量正定（最小本征值 > 0）
-        # - 值越大，约束越严格，但数值求解越困难
-        # - 值越小，数值稳定，但可能允许非物理解
-        #
-        # 推荐的 tolerance 设置:
-        # 1. 固定容差（简单但可能过严）:
-        #    tolerance = 1e-6  # 适用于 Nsites < 50
-        #    tolerance = 1e-7  # 适用于 Nsites = 100-200
-        #    tolerance = 1e-8  # 适用于 Nsites > 500
-        #
-        # 2. 自适应容差（推荐，随系统规模调整）:
-        #    当前使用: max(1e-8, min(1e-5, 1e-4/sqrt(Nsites)))
-        #    - Nsites=100: tolerance ≈ 1e-5
-        #    - Nsites=400: tolerance ≈ 5e-6
-        #    - Nsites=10000: tolerance ≈ 1e-6
-        #
-        # 3. 放宽约束（如果优化困难收敛）:
-        #    tolerance = max(1e-7, 1e-4 / self.Nsites)
-        #    或调节 SLSQP 的 eps 参数（见 saddle_point_optimization_number）
-        #
-        # 4. 约束缩放（提高 SLSQP 敏感度）:
-        #    可返回 [scale_factor * (tolerance - con_eig)]
-        #    其中 scale_factor = 1e3 到 1e5
-        # ========================================
-        
-        # 当前配置（自适应容差）
-        # tolerance = max(1e-8, 1e-5 / np.sqrt(self.Nsites))
+        con_eig = Bogoliubov_constraint_jax(0, self.k1, self.k2, A1, A2, A3, B1, B2, B3, 
+                                        lambda_param, self.h, self.J1plus, self.J2plus, self.J3plus, self.bond_tab, self.spin_n, self.bond_n)
+
         tolerance = 1e-5 / np.sqrt(self.Nsites)
-        # tolerance = 1e-2
-        
-        # 替代配置示例（取消注释以使用）:
-        # tolerance = 1e-6  # 固定容差
-        # tolerance = max(1e-7, 1e-4 / self.Nsites)  # 放宽约束
-        
-        c = [float(tolerance - con_eig)]
-        # print(f"  当前约束最小本征值: {con_eig:.6e}, 设定容差: {tolerance:.6e}, 约束值: {c[0]:.6e}")
-        
-        # 可选：约束缩放（提高 SLSQP 对约束违反的敏感度）
-        # scale_factor = 1e4
-        # c = [float(scale_factor * (tolerance - con_eig))]
-            
+        c = [tolerance - float(con_eig)]
+
         return c
     
     def saddle_point_gapless_condition(self, A1: complex, B1: complex) -> float:
@@ -195,13 +157,7 @@ class SaddlePointOptimizer:
             constraints = self.saddle_point_constraint(lambda_param, A1, B1)
             return max(constraints)
         
-        # lambda_gapless = opt.brentq(constraint_max, 0.5, 1.5)
         lambda_gapless = opt.fsolve(constraint_max, 0.9685)[0]
-        # try:
-        #     lambda_gapless = opt.brentq(constraint_max, 0.5, 1.5)
-        # except ValueError:
-        #     # 如果brentq失败，尝试其他方法
-        #     lambda_gapless = opt.fsolve(constraint_max, 0.9685)[0]
         
         return lambda_gapless
     
@@ -467,7 +423,7 @@ class SaddlePointOptimizer:
         A2 = A1
         A3 = A1
         B1 = x[1]
-        B2 = -B1
+        B2 = B1
         B3 = B1
         # print(f"aux: Current A1: {A1}, B1: {B1}")
         
@@ -479,7 +435,7 @@ class SaddlePointOptimizer:
         lambda_param = self.saddle_point_optimization_number(x0 + 0.01, A1, B1)
         # print(f"x0 for lambda: {x0}, optimized lambda: {lambda_param}")
         
-        # res = Bogoliubov_constraint(0, self.k1, self.k2, self.Q1, self.Q2, A1, A2, A3, B1, B2, B3, lambda_param, self.h)
+        # res = Bogoliubov_constraint(0, self.k1, self.k2, A1, A2, A3, B1, B2, B3, lambda_param, self.h)
         
         # # 检查约束是否满足（最小本征值必须为正）
         # print(f"Checking constraint: min eigenvalue = {res:.6e} for A1={A1}, B1={B1}, lambda={lambda_param}")
@@ -492,10 +448,14 @@ class SaddlePointOptimizer:
         
         # 使用改进的Bogoliubov变换
         Ubov = Bogoliubov_transform_2_jax(
-             0, self.k1, self.k2, self.Q1, self.Q2, A1, A2, A3, B1, B2, B3, lambda_param, self.h,
-             self.J1plus, self.J2plus, self.J3plus)[0]
+             0, self.k1, self.k2, A1, A2, A3, B1, B2, B3, lambda_param, self.h,
+               self.J1plus, self.J2plus, self.J3plus, self.bond_tab, self.spin_n, self.bond_n)[0]
             
-        AA, BB = saddle_point_sum_jax(Ubov, self.k1, self.k2, self.Q1, self.Q2)[1:3]  # 修复：[1:3]返回2个元素
+        AA, BB = saddle_point_sum_jax(
+            Ubov, self.k1, self.k2,
+            self.J1plus, self.J2plus, self.J3plus,
+            self.bond_tab, self.spin_n, self.bond_n
+        )[1:3]
         # print(f"Current A1: {A1}, B1: {B1}, lambda: {lambda_param}, AA: {AA}, BB: {BB}")
         
         # 转换JAX数组为Python标量
@@ -528,7 +488,6 @@ class SaddlePointOptimizer:
         # 用于跟踪优化进度
         self.iteration_count = 0
         self.best_value = float('inf')
-        self._init_opt_log()
         
         def objective_with_progress(x):
             """带进度显示的目标函数"""
@@ -541,7 +500,7 @@ class SaddlePointOptimizer:
                 print(f"  [Iteration {self.iteration_count}] New best: A1={1j*x[0]:.6f}, B1={x[1]:.6f}, obj={obj_value:.6e}")
             elif self.iteration_count % 10 == 0:
                 print(f"  [Iteration {self.iteration_count}] Current: A1={1j*x[0]:.6f}, B1={x[1]:.6f}, obj={obj_value:.6e}")
-            
+
             
             
             return obj_value
@@ -584,12 +543,13 @@ class SaddlePointOptimizer:
         print("="*60)
         print(f"初始猜测: A1={1j*x0[0]:.6f}, B1={x0[1]:.6f}")
         print("-"*60)
+        self._init_opt_log()
         
         result = opt.minimize(
                 objective_with_progress,
                 x0,
                 method='Nelder-Mead',  # 使用 Nelder-Mead，不需要梯度
-                options={'xatol': 1e-8, 'fatol': 1e-8, 'maxiter': 10000, 'disp': True}
+                options={'xatol': 1e-8, 'fatol': 1e-8, 'maxiter': 1000, 'disp': True}
             )
         
         print("-"*60)
@@ -605,11 +565,10 @@ class SaddlePointOptimizer:
         # 提取优化结果
         x_opt = result.x
         A1 = 1j * x_opt[0]
-        A2 = A1
+        A2 = A2 = A1
         A3 = A1
         B1 = x_opt[1]
-        B2 = -B1
-        B3 = B1
+        B2 = B3 = B1
         print("Optimized A1:", A1)
         print("Optimized B1:", B1)
         
@@ -619,9 +578,10 @@ class SaddlePointOptimizer:
         
         return A1, A2, A3, B1, B2, B3, lambda_opt
 
-def optimize_saddle_point(k1: np.ndarray, k2: np.ndarray, h: float, Q1: float, Q2: float, 
-                         x0: np.ndarray, S: float = 0.5, 
-                         J1plus: float = 0.5, J2plus: float = 0.5, J3plus: float = 0.5) -> Tuple[complex, complex, complex, complex, complex, complex, float]:
+def optimize_saddle_point(k1: np.ndarray, k2: np.ndarray, h: float,
+                         x0: np.ndarray, S: float = 0.5,
+                         J1plus: float = 0.5, J2plus: float = 0.5, J3plus: float = 0.5,
+                         bond_tab: np.ndarray = None, bond_n: int = 1, spin_n: int = 1) -> Tuple[complex, complex, complex, complex, complex, complex, float]:
     """
     便利函数：执行鞍点优化
     
@@ -631,27 +591,34 @@ def optimize_saddle_point(k1: np.ndarray, k2: np.ndarray, h: float, Q1: float, Q
         动量网格
     h : float
         对称破缺场
-    Q1, Q2 : float
-        磁序波矢
     x0 : ndarray
         初始猜测 [A1_imag, B1]
     S : float
         自旋量子数
     J1plus, J2plus, J3plus : float
         交换耦合参数
-        
+    bond_tab : ndarray
+        键表
+    bond_n : int
+        键数量
+    spin_n : int
+        自旋数量
     Returns:
     --------
     tuple
         优化的鞍点参数
     """
+    if bond_tab is not None:
+        bond_tab = convert_bond_table_to_jax_array(bond_tab)
+
     # 设置全局参数
     print("Setting global parameters for optimization...")
-    set_global_params(J1plus=J1plus, J2plus=J2plus, J3plus=J3plus, Q1=Q1, Q2=Q2)
+    set_global_params(J1plus=J1plus, J2plus=J2plus, J3plus=J3plus, bond_tab=bond_tab, bond_n=bond_n, spin_n=spin_n)
     
     # 创建优化器
-    optimizer = SaddlePointOptimizer(S=S, J1plus=J1plus, J2plus=J2plus, J3plus=J3plus)
-    optimizer.set_lattice(k1, k2, h, Q1, Q2)
+    optimizer = SaddlePointOptimizer(S=S, J1plus=J1plus, J2plus=J2plus, J3plus=J3plus,
+                                     bond_tab=bond_tab, bond_n=bond_n, spin_n=spin_n)
+    optimizer.set_lattice(k1, k2, h)
 
     # A1 = 0.567 * 1j
     # A2 = 0.567 * 1j
@@ -668,7 +635,7 @@ def optimize_saddle_point(k1: np.ndarray, k2: np.ndarray, h: float, Q1: float, Q
     # print("=============================================")
     # lambda_opt = optimizer.saddle_point_optimization_number(lambda_val + 0.01, A1, B1)
 
-    # res=Bogoliubov_constraint(0, k1, k2, Q1, Q2, A1, A2, A3, B1, B2, B3, lambda_val, 1/100)
+    # res=Bogoliubov_constraint(0, k1, k2, A1, A2, A3, B1, B2, B3, lambda_val, 1/100)
     # print("=============================================")
     # de_lambda = optimizer.saddle_point_optimization_number(lambda_val+0.01, A1, B1)
     # print("de_lambda:", de_lambda)

@@ -20,6 +20,7 @@ from spectral_calculation_jax import calculate_spectral_jax_vectorized
 from spectral_calculation import get_triangular_lattice_path, convert_to_cartesian_coordinates
 from visualization import plot_dispersion, plot_spectral_intensity, plot_multiple_spectral_channels
 from IO import write_results_to_file, read_results_from_file
+import IO
 
 # 启用64位精度
 jax.config.update("jax_enable_x64", True)
@@ -110,6 +111,10 @@ def run_spectra_calculation_jax(L1: int,
     k2 = k2_2d.flatten()
     Nsites = len(k1)
     h = 1.0 / Nsites
+
+    [bond_tab, n_spin, n_bond] = IO.read_bond_table(filepath='bond.log')
+    bond_tab_numeric = IO.convert_bond_table_to_jax_array(bond_tab)
+    bond_tab_jax = jnp.asarray(bond_tab_numeric)
     
     # 设置全局参数
     set_global_params(J1plus=J1plus, J2plus=J2plus, J3plus=J3plus, Q1=Q1, Q2=Q2)
@@ -119,6 +124,9 @@ def run_spectra_calculation_jax(L1: int,
         print(f"  交换耦合: J1={J1xy}, J2={J2xy}, J3={J3xy}")
         print(f"  自旋: S={S}")
     
+    dispersion_success = False
+    spectral_success = False
+
 
     # 计算色散关系
     if verbose:
@@ -143,9 +151,12 @@ def run_spectra_calculation_jax(L1: int,
         
         # 使用JAX批量Bogoliubov变换计算本征值 (返回2个值: Ubov, ek)
         _, ek_batch = Bogoliubov_transform_2_jax(
-            0, kx_batch, ky_batch, Q1, Q2,
-            A1, A2, A3, B1, B2, B3,
-            lambda_param, h, J1plus, J2plus, J3plus
+            0, kx_batch, ky_batch, A1, A2, A3, B1, B2, B3, lambda_param, h,
+            J1plus, J2plus, J3plus,
+            bond_tab=bond_tab_jax,
+            spin_n=n_spin,
+            bond_n=n_bond,
+            
         )
         
         # 转换为NumPy用于绘图
@@ -163,6 +174,7 @@ def run_spectra_calculation_jax(L1: int,
         
         if verbose:
             print("  色散关系计算完成并保存")
+        dispersion_success = True
             
     except Exception as e:
         print(f"  色散关系计算失败: {e}")
@@ -262,6 +274,7 @@ def run_spectra_calculation_jax(L1: int,
             if verbose:
                 print(f"  {name} 光谱数据已保存到 {spectral_file}")
                 print("  光谱函数计算完成并保存")
+        spectral_success = True
             
     except Exception as e:
         print(f"  光谱函数计算失败: {e}")
@@ -292,8 +305,17 @@ def run_spectra_calculation_jax(L1: int,
         print(f"保存高对称点索引失败: {e}")
     
     if verbose:
-        print("\n计算完成！)")
-        print(f"结果已保存为 results/dispersion_L{L1}.png 和 results/spectral_L{L1}.png")
+        if dispersion_success and spectral_success:
+            print("\n计算完成！)")
+            print(f"结果已保存为 results/dispersion_L{L1}.png 和 results/spectral_L{L1}.png")
+        elif dispersion_success and not spectral_success:
+            print("\n计算结束：色散完成，光谱失败。")
+            print(f"已保存色散图: results/dispersion_L{L1}.png")
+        elif not dispersion_success and spectral_success:
+            print("\n计算结束：色散失败，光谱完成。")
+            print(f"已保存光谱图: results/spectral_L{L1}.png")
+        else:
+            print("\n计算结束：色散与光谱均未成功完成。")
     
     return {
         'saddle_point': (A1, A2, A3, B1, B2, B3, lambda_param),
@@ -308,7 +330,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='SWB系统计算')
-    parser.add_argument('--L1', type=int, default=10, help='晶格大小 (默认: 10)')
+    parser.add_argument('--L1', type=int, default=5, help='晶格大小 (默认: 10)')
     parser.add_argument('--beta', type=float, default=100, help='反演温度 (默认: 100)')
     parser.add_argument('--eta', type=float, default=0.01, help='频率展宽 (默认: 0.01)')
     parser.add_argument('--domega', type=float, default=0.01, help='频率步长 (默认: 0.01)')

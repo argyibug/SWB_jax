@@ -1,0 +1,20 @@
+# Large generated archives
+*.zip
+
+# Matplotlib PostScript output (extensionless) / generated plots
+np
+IO
+jnp
+plt
+jax
+pe
+*.ps
+
+# Editor local history
+.history/
+**/.history/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 import jax
+from bogoliubov_transform_jax import Bogoliubov_constraint_jax
 
 # 模型参数
 J1xy = J2xy = J3xy = 1.0
@@ -19,36 +20,33 @@ J3plus = (J3z + J3xy) / 2
 # 晶格参数
 L1 = 10
 L2 = L1
-k1 = jnp.array([10])
-k2 = jnp.array([10])
 Nsites = 10
-h = 1
+k1_1d = 2*np.pi/L1 * np.arange(L1)
+k2_1d = 2*np.pi/L2 * np.arange(L2)
+k1_2d, k2_2d = np.meshgrid(k1_1d, k2_1d, indexing='ij')
+k1 = k1_2d.flatten()
+k2 = k2_2d.flatten()
+h = 1/Nsites
+# print(f"k1 : {k1}")
+# print(f"k2 : {k2}")
+print(f"+++++++++++++++++++++++++")
 
 A1 = A2 = A3 = 0.49126303j
-B1 = B2 = B3 = 0.22640955
-lambda_param = 0.94176189
+B1 = 0.22640955
+B2 = B1
+B3 = B1
+B1 = B1
+lambda_param = 1.94176189
+# lambda_param = 0
+# h = 0
     
 # 读取晶格信息
 [bond_tab, n_spin, n_bond] = IO.create_bond_table_file(unit_vector_filepath='unit_vector.in', cellspin_filepath='cellspin.in')
 [bond_tab, n_spin, n_bond] = IO.read_bond_table(filepath='bond.log')
 
-# JAX 不能直接处理 object dtype，转为数值表: [i, j, site_i, site_j, rij_x, rij_y, type]
-bond_tab_numeric = np.zeros((n_bond, 7), dtype=np.float64)
-for b in range(n_bond):
-	bond = bond_tab[b]
-	bond_tab_numeric[b, 0] = int(bond[0])
-	bond_tab_numeric[b, 1] = int(bond[1])
-	bond_tab_numeric[b, 2] = int(bond[2])
-	bond_tab_numeric[b, 3] = int(bond[3])
-	if len(bond) >= 7:
-		rij_frac = np.asarray(bond[5], dtype=np.float64)
-		bond_tab_numeric[b, 6] = int(bond[6])
-	else:
-		rij_frac = np.asarray(bond[4], dtype=np.float64)
-		bond_tab_numeric[b, 6] = float(b % 3)
-	bond_tab_numeric[b, 4] = rij_frac[0]
-	bond_tab_numeric[b, 5] = rij_frac[1]
-
+# 统一使用 IO 中的转换函数，得到 9 列标准格式：
+# [i, j, site_i, site_j, lattice_rij_x, lattice_rij_y, real_rij_x, real_rij_y, bond_type]
+bond_tab_numeric = IO.convert_bond_table_to_jax_array(bond_tab)
 bond_tab_jax = jnp.asarray(bond_tab_numeric)
 
 print(f"读取键表: 共 {n_bond} 个键")
@@ -75,10 +73,24 @@ H = Ham_jax(
 	spin_n=n_spin,
 	bond_n=n_bond,
 )
-print(f"哈密顿量形状: {H.shape}")
+# print("h=", h)
+# print(f"哈密顿量形状: {H.shape}")
+
+# H0 = np.asarray(H[25, :, :])
+# print("k", k1[25], k2[25])
+# print("哈密顿量示例元素 (H[25, :, :]):")
+# print(np.array2string(H0, precision=6, suppress_small=True, max_line_width=160))
+# eigenvalues, eigenvectors = np.linalg.eig(H0)
+# print("H[25] 的特征值:")
+# print(np.array2string(eigenvalues, precision=6, suppress_small=True, max_line_width=160))
+
 H0 = np.asarray(H[0, :, :])
-print("哈密顿量示例元素 (H[0, :, :]):")
-print(np.array2string(H0, precision=6, suppress_small=True, max_line_width=160))
+# print("k", k1[0], k2[0])
+# print("哈密顿量示例元素 (H[0, :, :]):")
+# print(np.array2string(H0, precision=6, suppress_small=True, max_line_width=160))
+# eigenvalues, eigenvectors = np.linalg.eig(H0)
+# print("H[25] 的特征值:")
+# print(np.array2string(eigenvalues, precision=6, suppress_small=True, max_line_width=160))
 
 # 绘制 12x12 热力图：分别展示实部和虚部
 def _annotate_heatmap(ax, data, fmt=".2f"):
@@ -130,50 +142,82 @@ fig.savefig("results/H0_heatmap_12x12.png", dpi=200)
 plt.close(fig)
 print("已生成热力图: results/H0_heatmap_12x12.png")
 
+# print(f"+++++++++++++++++++++++++=====================+++++++++++++++++++++++++=====================")
+# k1 = jnp.array([0.2])
+# k2 = jnp.array([0.5])
+# H = Ham_jax(
+# 	omega=0.0,
+# 	k1=k1,
+# 	k2=k2,
+# 	A1=A1,
+# 	A2=A2,
+# 	A3=A3,
+# 	B1=B1,
+# 	B2=B2,
+# 	B3=B3,
+# 	lambda_param=lambda_param,
+# 	h=h,
+# 	J1plus=J1plus,
+# 	J2plus=J2plus,
+# 	J3plus=J3plus,
+# 	bond_tab=bond_tab_jax,
+# 	spin_n=n_spin,
+# 	bond_n=n_bond,
+# )
+# H0 = np.asarray(H[0, :, :])
+# print("k", k1[0], k2[0])
+# print("哈密顿量示例元素 (H[0, :, :]):")
+# print(np.array2string(H0, precision=6, suppress_small=True, max_line_width=160))
+# eigenvalues, eigenvectors = np.linalg.eig(H0)
+# print("H[25] 的特征值:")
+# print(np.array2string(eigenvalues, precision=6, suppress_small=True, max_line_width=160))
+
 import bogoliubov_transform_jax
 # test Bogoliubov transform
 from bogoliubov_transform_jax import bogoliubov_single_k
 print(f"Bogoliubov变换输入矩阵 H[0] 形状: {H[0].shape}")
 print("spin_n:", n_spin)
+# n_spin = 1
 Ubov, ek = bogoliubov_single_k(H[0], n_spin)
-# print("Bogoliubov变换矩阵 Ubov:")
-# print(np.array2string(np.asarray(Ubov), precision=6, suppress_small=True, max_line_width=160))
+print("Bogoliubov变换矩阵 Ubov:")
+print(np.array2string(np.asarray(Ubov), precision=6, suppress_small=True, max_line_width=160))
 print("能谱 ek:")
 print(np.array2string(np.asarray(ek), precision=6, suppress_small=True, max_line_width=160))
 
-mat_dim = 4 * n_spin
-g = jnp.eye(mat_dim, dtype=jnp.float64)
-def make_g(n, carry):
-    return carry.at[n, n].set(-1)
-g = jax.lax.fori_loop(2*n_spin, 4*n_spin, make_g, g)
-Ubov_dag = jnp.conjugate(jnp.transpose(Ubov))
-check = Ubov_dag @ g @ Ubov-g
-print("Bogoliubov变换的正则化检查 (Ubov^† g Ubov - g):")
-print(np.array2string(np.asarray(check), precision=6, suppress_small=True, max_line_width=160))
+# print(Ubov @ jnp.conj(Ubov).T)
 
-# test compute_single_k_contribution
+# # test compute_single_k_contribution
 from bogoliubov_transform_jax import saddle_point_sum_jax
-[lambda_t, A_t, B_t, Usum_t] = saddle_point_sum_jax(
-	Ubov[jnp.newaxis, :, :],
-	k1=k1,
-	k2=k2,
-	J1plus=J1plus,
-	J2plus=J2plus,
-	J3plus=J3plus,
-	bond_tab=bond_tab_jax,
-	spin_n=n_spin,
-	bond_n=n_bond,
-)
-print("单个k点的贡献:")
-print("lambda_t:", lambda_t)
-print("A_t:", A_t)
-print("B_t:", B_t)
-# print("Usum_t:", Usum_t)
+# [lambda_t, A_t, B_t, Usum_t] = saddle_point_sum_jax(
+# 	Ubov[jnp.newaxis, :, :],
+# 	k1=jnp.asarray(k1[:1]),
+# 	k2=jnp.asarray(k2[:1]),
+# 	J1plus=J1plus,
+# 	J2plus=J2plus,
+# 	J3plus=J3plus,
+# 	bond_tab=bond_tab_jax,
+# 	spin_n=n_spin,
+# 	bond_n=n_bond,
+# )
+# print("单个k点的贡献:")
+# print("lambda_t:", lambda_t)
+# print("A_t:", A_t)
+# print("B_t:", B_t)
+# # print(np.array2string(Usum_t, precision=6, suppress_small=True, max_line_width=160))
 
+# print(f"+++++++++++++++++++++++++=====================+++++++++++++++++++++++++=====================")
 
-A1 = A2 = A3 = 0.4934543715111092j
-B1 = B2 = B3 = 0.2277674726161695
-lambda_param = 0.9608546444218063
+# A1 = A2 = A3 = 0.4934543715111092j
+# B1 = 0.2277674726161695
+# B2 = B1
+# B3 = B1
+# lambda_param = 0.9608546444218063
+
+A1 = A2 = A3 = 0.515211j
+B1 = 0.297895
+B2 = B1
+B3 = B1
+lambda_param = 1.067237
 
 L1 = 5
 L2 = L1
@@ -186,7 +230,7 @@ Nsites = len(k1)
 h = 1/Nsites
 
 from Hamiltonian_jax import Ham_jax
-# 构建哈密顿量
+# # 构建哈密顿量
 H = Ham_jax(
 	omega=0.0,
 	k1=k1,
@@ -206,16 +250,56 @@ H = Ham_jax(
 	spin_n=n_spin,
 	bond_n=n_bond,
 )
+
 from bogoliubov_transform_jax import Bogoliubov_transform_2_jax
 from bogoliubov_transform_jax import Bogoliubov_constraint_jax_batch
 min_eng = Bogoliubov_constraint_jax_batch(
 	0, k1, k2, A1, A2, A3, B1, B2, B3, lambda_param, h,
-	J1plus, J2plus, J3plus, bond_tab=bond_tab_jax, spin_n=n_spin, bond_n=n_bond,)
+	J1plus, J2plus, J3plus,
+	bond_tab=bond_tab_jax,
+	spin_n=n_spin,
+	bond_n=n_bond,)
 print(f"当前能量: {min_eng}")
+idx=8
+print(f"min_eng: {min_eng[idx]}, at k1: {k1[idx]}, k2: {k2[idx]}")
+
+H0 = np.asarray(H[idx, :, :])
+print("k", k1[idx], k2[idx])
+print("哈密顿量示例元素 (H[idx, :, :]):")
+print(np.array2string(H0, precision=6, suppress_small=True, max_line_width=160))
+
 Ubov = Bogoliubov_transform_2_jax(
         0, k1, k2, A1, A2, A3, B1, B2, B3, lambda_param, h,
-        J1plus, J2plus, J3plus, bond_tab=bond_tab_jax, spin_n=n_spin, bond_n=n_bond)[0]
+        J1plus, J2plus, J3plus,
+		bond_tab=bond_tab_jax,
+		spin_n=n_spin,
+		bond_n=n_bond,)[0]
 
-lam, AA, BB = saddle_point_sum_jax(Ubov, k1, k2, J1plus, J2plus, J3plus, bond_tab_jax, n_spin, n_bond)[0:3]  # 修复：[1:3]返回2个元素
+lam, AA, BB = saddle_point_sum_jax(
+	Ubov,
+	k1,
+	k2,
+	J1plus=J1plus,
+	J2plus=J2plus,
+	J3plus=J3plus,
+	bond_tab=bond_tab_jax,
+	spin_n=n_spin,
+	bond_n=n_bond,
+)[0:3]
+print(f"===============================================+++++++++++++++++++++++++=====================")
 print(f"Current  lam: {lam}, A: {AA}, B: {BB}")
-print(f"Initial  lam: {lambda_param}, A: {A1}, B: {B1}")
+print(f"inital  lam: {lambda_param}, A: {A1}, B: {B1}")
+print(f"===============================================+++++++++++++++++++++++++=====================")
+
+# A2 = A1
+# A3 = A1
+# B2 = B1
+# B3 = B1
+
+# con_eig = Bogoliubov_constraint_jax(0, k1, k2, A1, A2, A3, B1, B2, B3, 
+# 									lambda_param, h, J1plus, J2plus, J3plus, bond_tab_jax, n_spin, n_bond)
+
+# tolerance = 1e-5 / np.sqrt(Nsites)
+# c = [tolerance - float(con_eig)]
+
+# print(f"约束条件值: {con_eig}, 目标值: {tolerance}, 差值: {c[0]}")
